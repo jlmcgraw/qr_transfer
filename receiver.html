@@ -287,7 +287,10 @@
       const hints = new Map();
       hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE]);
       hints.set(DecodeHintType.TRY_HARDER, true);
-      reader = new BrowserMultiFormatReader(hints, 50);
+      reader = new BrowserMultiFormatReader(hints, {
+        delayBetweenScanAttempts: 50,
+        delayBetweenScanSuccess: 50
+      });
       try {
         controls = await reader.decodeFromVideoDevice(null, video, (result, err) => {
           if (result?.text) onDecode(result.text);
