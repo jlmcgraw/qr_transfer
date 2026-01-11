@@ -1,0 +1,512 @@
+<!-- sender.html -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>File → Animated QR Loop (Sender)</title>
+  <style>
+    :root { --bg:#0b0c10; --fg:#e6e6e6; --muted:#a9a9a9; --panel:#14161d; --line:#2a2f3a; }
+    html,body { height:100%; margin:0; background:var(--bg); color:var(--fg); font:14px/1.35 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    .wrap { max-width:1100px; margin:0 auto; padding:18px; display:grid; gap:14px; grid-template-columns: 380px 1fr; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; }
+    h1 { font-size:16px; margin:0 0 10px; }
+    label { display:block; margin:10px 0 6px; color:var(--muted); }
+    input,select,button { font:inherit; }
+    input[type="number"], select {
+      width:100%; box-sizing:border-box; padding:8px 10px; border-radius:10px;
+      background:#0f1118; border:1px solid var(--line); color:var(--fg);
+    }
+    button {
+      padding:10px 12px; border-radius:10px; border:1px solid var(--line);
+      background:#0f1118; color:var(--fg); cursor:pointer;
+    }
+    button:disabled { opacity:0.5; cursor:not-allowed; }
+    .row { display:flex; gap:10px; align-items:center; }
+    .row > * { flex:1; }
+    .drop {
+      border:2px dashed #394155; border-radius:12px; padding:16px; text-align:center;
+      color:var(--muted); background:#0f1118;
+    }
+    .drop.drag { border-color:#7a8cff; color:var(--fg); }
+    .small { color:var(--muted); font-size:12px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .qrStage {
+      display:grid; place-items:center; padding:16px;
+      background:#0f1118; border-radius:12px; border:1px solid var(--line);
+      min-height:520px;
+    }
+    canvas { image-rendering: pixelated; }
+    .status { display:grid; gap:8px; }
+    .kv { display:grid; grid-template-columns: 140px 1fr; gap:8px; }
+    .kv div:nth-child(odd) { color:var(--muted); }
+    .bar { height:10px; background:#0f1118; border:1px solid var(--line); border-radius:999px; overflow:hidden; }
+    .bar > div { height:100%; width:0%; background:#7a8cff; }
+    .warn { color:#ffbf66; }
+    .err { color:#ff6b6b; }
+    .ok { color:#76ff9b; }
+    .fsHint { margin-top:10px; color:var(--muted); font-size:12px; }
+    .fs { position:fixed; inset:0; background:#000; z-index:9999; display:grid; place-items:center; padding:18px; }
+    .fs .inner { width:min(92vw, 920px); }
+    .fs .top { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Sender: file → animated QR loop</h1>
+
+      <div id="drop" class="drop">
+        Drop file here
+        <div class="small" style="margin-top:8px">or</div>
+        <div style="margin-top:10px">
+          <input id="fileInput" type="file" />
+        </div>
+      </div>
+
+      <label>Frame interval (ms)</label>
+      <input id="intervalMs" type="number" min="50" step="10" value="150" />
+
+      <div class="row">
+        <div>
+          <label>Error correction</label>
+          <select id="ecLevel">
+            <option value="L">L (max capacity)</option>
+            <option value="M" selected>M</option>
+            <option value="Q">Q</option>
+            <option value="H">H (most robust)</option>
+          </select>
+        </div>
+        <div>
+          <label>Max QR version</label>
+          <select id="maxVersion">
+            <option value="14">14</option>
+            <option value="18" selected>18</option>
+            <option value="22">22</option>
+            <option value="26">26</option>
+            <option value="30">30</option>
+            <option value="40">40</option>
+          </select>
+        </div>
+      </div>
+
+      <label>QR pixel size</label>
+      <input id="qrPx" type="number" min="220" step="10" value="520" />
+
+      <div class="row" style="margin-top:12px">
+        <button id="buildBtn" disabled>Build QR set</button>
+        <button id="startBtn" disabled>Start loop</button>
+      </div>
+
+      <div class="row" style="margin-top:10px">
+        <button id="stopBtn" disabled>Stop</button>
+        <button id="fsBtn" disabled>Fullscreen</button>
+      </div>
+
+      <div class="status" style="margin-top:14px">
+        <div class="bar"><div id="barFill"></div></div>
+        <div id="msg" class="small">No file loaded.</div>
+
+        <div class="kv small">
+          <div>Transfer ID</div><div id="transferId" class="mono">—</div>
+          <div>File</div><div id="fileName" class="mono">—</div>
+          <div>Size</div><div id="fileSize" class="mono">—</div>
+          <div>Last modified</div><div id="fileLM" class="mono">—</div>
+          <div>SHA-256</div><div id="fileHash" class="mono">—</div>
+          <div>Chunk bytes</div><div id="chunkBytes" class="mono">—</div>
+          <div>Frames</div><div id="frameCount" class="mono">—</div>
+        </div>
+
+        <div class="small warn">
+          Browser supplies only last-modified time, not true creation time.
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h1>Animated QR display</h1>
+      <div class="qrStage">
+        <canvas id="qrCanvas"></canvas>
+      </div>
+      <div class="fsHint">Manifest frame is index 0. Data frames start at index 1.</div>
+      <div class="small" style="margin-top:8px">
+        Current frame: <span id="curFrame" class="mono">—</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- QR generator: https://github.com/soldair/node-qrcode -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    const drop = $("drop");
+    const fileInput = $("fileInput");
+    const buildBtn = $("buildBtn");
+    const startBtn = $("startBtn");
+    const stopBtn = $("stopBtn");
+    const fsBtn = $("fsBtn");
+
+    const intervalMsEl = $("intervalMs");
+    const ecLevelEl = $("ecLevel");
+    const maxVersionEl = $("maxVersion");
+    const qrPxEl = $("qrPx");
+
+    const barFill = $("barFill");
+    const msg = $("msg");
+    const transferIdEl = $("transferId");
+    const fileNameEl = $("fileName");
+    const fileSizeEl = $("fileSize");
+    const fileLMEl = $("fileLM");
+    const fileHashEl = $("fileHash");
+    const chunkBytesEl = $("chunkBytes");
+    const frameCountEl = $("frameCount");
+    const curFrameEl = $("curFrame");
+
+    const qrCanvas = $("qrCanvas");
+
+    let loadedFile = null;
+    let frames = [];        // array of payload strings
+    let frameIndex = 0;
+    let timer = null;
+
+    function setMsg(text, cls = "small") {
+      msg.className = cls;
+      msg.textContent = text;
+    }
+
+    function fmtBytes(n) {
+      const units = ["B","KB","MB","GB","TB"];
+      let i = 0;
+      let v = n;
+      while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+      return (i === 0 ? String(v) : v.toFixed(2)) + " " + units[i];
+    }
+
+    function u8ToB64Url(u8) {
+      let s = "";
+      const chunk = 0x8000;
+      for (let i = 0; i < u8.length; i += chunk) {
+        s += String.fromCharCode.apply(null, u8.subarray(i, i + chunk));
+      }
+      const b64 = btoa(s);
+      return b64.replaceAll("+","-").replaceAll("/","_").replaceAll("=","");
+    }
+
+    function b64UrlLenForByteLen(n) {
+      // base64 length = 4*ceil(n/3), then minus '=' padding (0..2). url-safe keeps same char count after trim.
+      const full = 4 * Math.ceil(n / 3);
+      const mod = n % 3;
+      const pad = (mod === 0) ? 0 : (3 - mod);
+      return full - pad;
+    }
+
+    function crc32(u8) {
+      let c = 0 ^ (-1);
+      for (let i = 0; i < u8.length; i++) {
+        c = (c >>> 8) ^ CRC32_TABLE[(c ^ u8[i]) & 0xff];
+      }
+      return (c ^ (-1)) >>> 0;
+    }
+
+    const CRC32_TABLE = (() => {
+      const t = new Uint32Array(256);
+      for (let i = 0; i < 256; i++) {
+        let c = i;
+        for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        t[i] = c >>> 0;
+      }
+      return t;
+    })();
+
+    function hexFromBuf(buf) {
+      const u8 = new Uint8Array(buf);
+      let out = "";
+      for (const b of u8) out += b.toString(16).padStart(2, "0");
+      return out;
+    }
+
+    async function sha256HexOfU8(u8) {
+      const digest = await crypto.subtle.digest("SHA-256", u8);
+      return hexFromBuf(digest);
+    }
+
+    function randomId() {
+      const u8 = crypto.getRandomValues(new Uint8Array(16));
+      return Array.from(u8).map(b => b.toString(16).padStart(2, "0")).join("");
+    }
+
+    function qrFits(text, ecLevel, maxVersion) {
+      try {
+        const qr = QRCode.create(text, { errorCorrectionLevel: ecLevel });
+        return qr.version <= maxVersion;
+      } catch {
+        return false;
+      }
+    }
+
+    function pickChunkBytes(ecLevel, maxVersion) {
+      // Binary-search a chunk size that keeps a typical data frame within maxVersion.
+      // Conservative overhead model: JSON wrapper + headers + base64url.
+      const headerOverhead = 240; // conservative chars
+      let lo = 40, hi = 1800, best = 200;
+
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const dataLen = b64UrlLenForByteLen(mid);
+        const dummy = {
+          v: 1,
+          t: "data",
+          transfer_id: "x".repeat(32),
+          idx: 123,
+          n: 999,
+          crc32: "ffffffff",
+          data: "A".repeat(dataLen)
+        };
+        const text = JSON.stringify(dummy);
+        const ok = (text.length <= (headerOverhead + dataLen + 200)) && qrFits(text, ecLevel, maxVersion);
+        if (ok) { best = mid; lo = mid + 1; }
+        else { hi = mid - 1; }
+      }
+      return best;
+    }
+
+    async function renderFrame(text) {
+      const px = Number(qrPxEl.value);
+      qrCanvas.width = px;
+      qrCanvas.height = px;
+
+      await QRCode.toCanvas(qrCanvas, text, {
+        errorCorrectionLevel: ecLevelEl.value,
+        margin: 1,
+        width: px
+      });
+    }
+
+    function stopLoop() {
+      if (timer) clearInterval(timer);
+      timer = null;
+      stopBtn.disabled = true;
+      startBtn.disabled = frames.length === 0;
+    }
+
+    function startLoop() {
+      stopLoop();
+      const ms = Math.max(50, Number(intervalMsEl.value) || 150);
+      timer = setInterval(async () => {
+        if (!frames.length) return;
+        frameIndex = (frameIndex + 1) % frames.length;
+        await renderFrame(frames[frameIndex]);
+        curFrameEl.textContent = `${frameIndex} / ${frames.length - 1}`;
+      }, ms);
+      stopBtn.disabled = false;
+      startBtn.disabled = true;
+    }
+
+    function setProgress(p) {
+      const clamped = Math.max(0, Math.min(1, p));
+      barFill.style.width = `${(clamped * 100).toFixed(1)}%`;
+    }
+
+    function enableControlsAfterLoad() {
+      buildBtn.disabled = !loadedFile;
+    }
+
+    async function buildQrSet(file) {
+      frames = [];
+      frameIndex = 0;
+      setProgress(0);
+      setMsg("Reading file…");
+
+      const transferId = randomId();
+      transferIdEl.textContent = transferId;
+
+      const buf = await file.arrayBuffer();
+      const u8 = new Uint8Array(buf);
+
+      setMsg("Hashing (SHA-256)…");
+      const sha = await sha256HexOfU8(u8);
+      fileHashEl.textContent = sha;
+
+      const ec = ecLevelEl.value;
+      const maxV = Number(maxVersionEl.value);
+      const chunkBytes = pickChunkBytes(ec, maxV);
+
+      chunkBytesEl.textContent = String(chunkBytes);
+
+      const totalChunks = Math.ceil(u8.length / chunkBytes);
+      const manifest = {
+        v: 1,
+        t: "manifest",
+        transfer_id: transferId,
+        created_at_ms: Date.now(),
+        file: {
+          name: file.name,
+          size: file.size,
+          type: file.type || null,
+          last_modified_ms: file.lastModified ?? null,
+          sha256_hex: sha
+        },
+        encoding: {
+          chunk_bytes: chunkBytes,
+          data_encoding: "base64url",
+          crc32: true,
+          total_data_frames: totalChunks
+        }
+      };
+
+      const manifestText = JSON.stringify(manifest);
+      if (!qrFits(manifestText, ec, maxV)) {
+        throw new Error("Manifest does not fit selected max QR version. Raise max version or lower metadata size.");
+      }
+      frames.push(manifestText);
+
+      setMsg("Building frames…");
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * chunkBytes;
+        const end = Math.min(u8.length, start + chunkBytes);
+        const slice = u8.subarray(start, end);
+        const payload = {
+          v: 1,
+          t: "data",
+          transfer_id: transferId,
+          idx: i + 1,           // data frames start at 1; manifest is 0 by convention
+          n: totalChunks,
+          crc32: crc32(slice).toString(16).padStart(8, "0"),
+          data: u8ToB64Url(slice)
+        };
+        const text = JSON.stringify(payload);
+
+        if (!qrFits(text, ec, maxV)) {
+          throw new Error(`Frame ${i + 1} exceeds max QR version. Reduce max payload by lowering maxVersion or using lower EC, then rebuild.`);
+        }
+
+        frames.push(text);
+        if ((i & 15) === 0) setProgress((i + 1) / totalChunks);
+      }
+
+      frameCountEl.textContent = `${frames.length} (0..${frames.length - 1})`;
+      setProgress(1);
+
+      await renderFrame(frames[0]);
+      curFrameEl.textContent = `0 / ${frames.length - 1}`;
+
+      setMsg("Built. Frame 0 is manifest.", "small ok");
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      fsBtn.disabled = false;
+    }
+
+    function setFile(file) {
+      loadedFile = file;
+      fileNameEl.textContent = file ? file.name : "—";
+      fileSizeEl.textContent = file ? fmtBytes(file.size) : "—";
+      fileLMEl.textContent = file && file.lastModified ? new Date(file.lastModified).toISOString() : "—";
+      fileHashEl.textContent = "—";
+      chunkBytesEl.textContent = "—";
+      frameCountEl.textContent = "—";
+      transferIdEl.textContent = "—";
+      frames = [];
+      stopLoop();
+      startBtn.disabled = true;
+      fsBtn.disabled = true;
+      setProgress(0);
+      setMsg(file ? "File loaded. Build QR set." : "No file loaded.");
+      enableControlsAfterLoad();
+    }
+
+    drop.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      drop.classList.add("drag");
+    });
+    drop.addEventListener("dragleave", () => drop.classList.remove("drag"));
+    drop.addEventListener("drop", (e) => {
+      e.preventDefault();
+      drop.classList.remove("drag");
+      const f = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) setFile(f);
+    });
+
+    fileInput.addEventListener("change", () => {
+      const f = fileInput.files && fileInput.files[0];
+      if (f) setFile(f);
+    });
+
+    buildBtn.addEventListener("click", async () => {
+      if (!loadedFile) return;
+      buildBtn.disabled = true;
+      startBtn.disabled = true;
+      stopBtn.disabled = true;
+      fsBtn.disabled = true;
+      try {
+        await buildQrSet(loadedFile);
+      } catch (err) {
+        console.error(err);
+        setMsg(String(err?.message || err), "small err");
+        frames = [];
+      } finally {
+        buildBtn.disabled = !loadedFile;
+      }
+    });
+
+    startBtn.addEventListener("click", () => startLoop());
+    stopBtn.addEventListener("click", () => stopLoop());
+
+    fsBtn.addEventListener("click", async () => {
+      if (!frames.length) return;
+
+      const fs = document.createElement("div");
+      fs.className = "fs";
+      fs.innerHTML = `
+        <div class="inner">
+          <div class="top">
+            <div class="small">Transfer <span class="mono">${transferIdEl.textContent}</span></div>
+            <button id="exitFs">Exit</button>
+          </div>
+          <div style="display:grid;place-items:center;background:#000;border:1px solid #222;border-radius:12px;padding:12px">
+            <canvas id="fsCanvas"></canvas>
+          </div>
+          <div class="small" style="margin-top:10px">Frame: <span id="fsCur" class="mono"></span></div>
+        </div>
+      `;
+      document.body.appendChild(fs);
+
+      const fsCanvas = fs.querySelector("#fsCanvas");
+      const fsCur = fs.querySelector("#fsCur");
+      const exitBtn = fs.querySelector("#exitFs");
+
+      const renderFs = async () => {
+        const px = Math.min(920, Math.floor(window.innerWidth * 0.92));
+        fsCanvas.width = px;
+        fsCanvas.height = px;
+        await QRCode.toCanvas(fsCanvas, frames[frameIndex], {
+          errorCorrectionLevel: ecLevelEl.value,
+          margin: 1,
+          width: px
+        });
+        fsCur.textContent = `${frameIndex} / ${frames.length - 1}`;
+      };
+
+      const oldTimer = timer;
+      if (!timer) {
+        await renderFs();
+      }
+
+      const fsTick = setInterval(renderFs, Math.max(50, Number(intervalMsEl.value) || 150));
+
+      const close = () => {
+        clearInterval(fsTick);
+        fs.remove();
+        if (oldTimer === null) stopLoop();
+      };
+
+      exitBtn.addEventListener("click", close);
+      fs.addEventListener("click", (e) => { if (e.target === fs) close(); });
+      window.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); }, { once: true });
+    });
+
+    // Initial
+    setFile(null);
+  </script>
+</body>
+</html>

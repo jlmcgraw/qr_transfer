@@ -1,0 +1,310 @@
+<!-- receiver.html -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Animated QR → File (Receiver)</title>
+  <style>
+    :root { --bg:#0b0c10; --fg:#e6e6e6; --muted:#a9a9a9; --panel:#14161d; --line:#2a2f3a; }
+    html,body { height:100%; margin:0; background:var(--bg); color:var(--fg); font:14px/1.35 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    .wrap { max-width:1100px; margin:0 auto; padding:18px; display:grid; grid-template-columns: 1fr 420px; gap:14px; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; }
+    h1 { font-size:16px; margin:0 0 10px; }
+    video { width:100%; border-radius:12px; border:1px solid var(--line); background:#000; }
+    button { padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#0f1118; color:var(--fg); cursor:pointer; font:inherit; }
+    button:disabled { opacity:0.5; cursor:not-allowed; }
+    .row { display:flex; gap:10px; align-items:center; }
+    .row > * { flex:1; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .small { color:var(--muted); font-size:12px; }
+    .kv { display:grid; grid-template-columns: 140px 1fr; gap:8px; }
+    .kv div:nth-child(odd) { color:var(--muted); }
+    .bar { height:10px; background:#0f1118; border:1px solid var(--line); border-radius:999px; overflow:hidden; }
+    .bar > div { height:100%; width:0%; background:#7a8cff; }
+    .ok { color:#76ff9b; }
+    .warn { color:#ffbf66; }
+    .err { color:#ff6b6b; }
+    a { color:#7a8cff; text-decoration:none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Receiver: scan animated QR loop</h1>
+      <video id="video" playsinline></video>
+      <div class="row" style="margin-top:12px">
+        <button id="startBtn">Start camera</button>
+        <button id="stopBtn" disabled>Stop</button>
+      </div>
+      <div class="small" style="margin-top:10px" id="msg">Idle.</div>
+    </div>
+
+    <div class="card">
+      <h1>Transfer status</h1>
+
+      <div class="bar"><div id="barFill"></div></div>
+      <div class="small" style="margin-top:8px">Received: <span id="recv" class="mono">0</span> / <span id="total" class="mono">—</span></div>
+
+      <div class="kv small" style="margin-top:12px">
+        <div>Transfer ID</div><div id="tid" class="mono">—</div>
+        <div>File</div><div id="fname" class="mono">—</div>
+        <div>Size</div><div id="fsize" class="mono">—</div>
+        <div>Last modified</div><div id="flm" class="mono">—</div>
+        <div>SHA-256</div><div id="fsha" class="mono">—</div>
+        <div>Chunk bytes</div><div id="cbytes" class="mono">—</div>
+      </div>
+
+      <div style="margin-top:12px">
+        <button id="finalizeBtn" disabled>Finalize + download</button>
+      </div>
+      <div class="small" style="margin-top:10px">
+        <a id="dl" href="#" style="display:none" class="mono">download</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- ZXing browser (UMD) -->
+  <script src="https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/umd/index.min.js"></script>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    const video = $("video");
+    const startBtn = $("startBtn");
+    const stopBtn = $("stopBtn");
+    const finalizeBtn = $("finalizeBtn");
+    const msg = $("msg");
+
+    const barFill = $("barFill");
+    const recvEl = $("recv");
+    const totalEl = $("total");
+    const tidEl = $("tid");
+    const fnameEl = $("fname");
+    const fsizeEl = $("fsize");
+    const flmEl = $("flm");
+    const fshaEl = $("fsha");
+    const cbytesEl = $("cbytes");
+    const dl = $("dl");
+
+    let reader = null;
+    let controls = null;
+
+    let manifest = null;
+    let chunks = null;          // array of base64url strings, 1..n
+    let got = null;             // boolean array
+    let gotCount = 0;
+
+    function setMsg(text, cls = "small") {
+      msg.className = cls;
+      msg.textContent = text;
+    }
+
+    function setProgress(p) {
+      const clamped = Math.max(0, Math.min(1, p));
+      barFill.style.width = `${(clamped * 100).toFixed(1)}%`;
+    }
+
+    function fmtBytes(n) {
+      const units = ["B","KB","MB","GB","TB"];
+      let i = 0;
+      let v = n;
+      while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+      return (i === 0 ? String(v) : v.toFixed(2)) + " " + units[i];
+    }
+
+    function b64UrlToU8(s) {
+      let b64 = s.replaceAll("-","+").replaceAll("_","/");
+      const pad = (4 - (b64.length % 4)) % 4;
+      b64 += "=".repeat(pad);
+      const bin = atob(b64);
+      const u8 = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      return u8;
+    }
+
+    function crc32(u8) {
+      let c = 0 ^ (-1);
+      for (let i = 0; i < u8.length; i++) c = (c >>> 8) ^ CRC32_TABLE[(c ^ u8[i]) & 0xff];
+      return (c ^ (-1)) >>> 0;
+    }
+
+    const CRC32_TABLE = (() => {
+      const t = new Uint32Array(256);
+      for (let i = 0; i < 256; i++) {
+        let c = i;
+        for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        t[i] = c >>> 0;
+      }
+      return t;
+    })();
+
+    function hexFromBuf(buf) {
+      const u8 = new Uint8Array(buf);
+      let out = "";
+      for (const b of u8) out += b.toString(16).padStart(2, "0");
+      return out;
+    }
+
+    async function sha256HexOfU8(u8) {
+      const digest = await crypto.subtle.digest("SHA-256", u8);
+      return hexFromBuf(digest);
+    }
+
+    function resetState() {
+      manifest = null;
+      chunks = null;
+      got = null;
+      gotCount = 0;
+      recvEl.textContent = "0";
+      totalEl.textContent = "—";
+      tidEl.textContent = "—";
+      fnameEl.textContent = "—";
+      fsizeEl.textContent = "—";
+      flmEl.textContent = "—";
+      fshaEl.textContent = "—";
+      cbytesEl.textContent = "—";
+      dl.style.display = "none";
+      dl.href = "#";
+      dl.textContent = "download";
+      finalizeBtn.disabled = true;
+      setProgress(0);
+    }
+
+    function applyManifest(m) {
+      manifest = m;
+      const f = m.file || {};
+      tidEl.textContent = m.transfer_id || "—";
+      fnameEl.textContent = f.name || "—";
+      fsizeEl.textContent = (typeof f.size === "number") ? fmtBytes(f.size) : "—";
+      flmEl.textContent = (typeof f.last_modified_ms === "number") ? new Date(f.last_modified_ms).toISOString() : "—";
+      fshaEl.textContent = f.sha256_hex || "—";
+      cbytesEl.textContent = String(m?.encoding?.chunk_bytes ?? "—");
+
+      const n = Number(m?.encoding?.total_data_frames ?? 0);
+      totalEl.textContent = n ? String(n) : "—";
+      chunks = new Array(n + 1).fill(null); // index 1..n
+      got = new Array(n + 1).fill(false);
+      gotCount = 0;
+      setProgress(0);
+      setMsg("Manifest received. Scanning data frames…", "small ok");
+    }
+
+    function handleDataFrame(d) {
+      if (!manifest) return;
+
+      const tid = manifest.transfer_id;
+      if (d.transfer_id !== tid) return;
+
+      const n = Number(d.n);
+      if (!Number.isFinite(n) || n <= 0) return;
+      if (!chunks || chunks.length !== n + 1) return;
+
+      const idx = Number(d.idx);
+      if (!Number.isFinite(idx) || idx < 1 || idx > n) return;
+      if (got[idx]) return;
+
+      const u8 = b64UrlToU8(d.data || "");
+      const want = String(d.crc32 || "").toLowerCase();
+      const have = crc32(u8).toString(16).padStart(8, "0");
+
+      if (want && want !== have) return;
+
+      chunks[idx] = d.data;
+      got[idx] = true;
+      gotCount++;
+
+      recvEl.textContent = String(gotCount);
+      setProgress(gotCount / n);
+
+      if (gotCount === n) {
+        setMsg("All frames received. Finalize to reconstruct file.", "small ok");
+        finalizeBtn.disabled = false;
+      }
+    }
+
+    async function finalize() {
+      if (!manifest || !chunks) return;
+
+      const n = chunks.length - 1;
+      const parts = [];
+      let total = 0;
+
+      for (let i = 1; i <= n; i++) {
+        if (!chunks[i]) return;
+        const u8 = b64UrlToU8(chunks[i]);
+        parts.push(u8);
+        total += u8.length;
+      }
+
+      const out = new Uint8Array(total);
+      let off = 0;
+      for (const p of parts) { out.set(p, off); off += p.length; }
+
+      const sha = await sha256HexOfU8(out);
+      const expected = manifest?.file?.sha256_hex;
+
+      if (expected && sha !== expected) {
+        setMsg("SHA-256 mismatch. Transfer corrupt.", "small err");
+        return;
+      }
+
+      const blob = new Blob([out], { type: manifest?.file?.type || "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+
+      dl.href = url;
+      dl.download = manifest?.file?.name || "recovered.bin";
+      dl.textContent = dl.download;
+      dl.style.display = "inline";
+
+      setMsg("Reconstructed. Download link ready.", "small ok");
+    }
+
+    async function onDecode(text) {
+      let obj = null;
+      try { obj = JSON.parse(text); } catch { return; }
+      if (!obj || obj.v !== 1 || typeof obj.t !== "string") return;
+
+      if (obj.t === "manifest") {
+        resetState();
+        applyManifest(obj);
+        return;
+      }
+      if (obj.t === "data") {
+        handleDataFrame(obj);
+      }
+    }
+
+    startBtn.addEventListener("click", async () => {
+      resetState();
+      setMsg("Starting camera…");
+      startBtn.disabled = true;
+
+      reader = new ZXingBrowser.BrowserMultiFormatReader();
+      try {
+        controls = await reader.decodeFromVideoDevice(null, video, (result, err) => {
+          if (result?.text) onDecode(result.text);
+        });
+        stopBtn.disabled = false;
+        setMsg("Scanning…", "small ok");
+      } catch (e) {
+        console.error(e);
+        setMsg(String(e?.message || e), "small err");
+        startBtn.disabled = false;
+      }
+    });
+
+    stopBtn.addEventListener("click", async () => {
+      try { controls?.stop(); } catch {}
+      controls = null;
+      stopBtn.disabled = true;
+      startBtn.disabled = false;
+      setMsg("Stopped.", "small");
+    });
+
+    finalizeBtn.addEventListener("click", finalize);
+
+    resetState();
+  </script>
+</body>
+</html>
