@@ -136,7 +136,7 @@
   </div>
 
   <!-- QR generator: https://github.com/soldair/node-qrcode -->
-  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/lib/browser.min.js"></script>
+  <script type="module"> import qrcode from 'https://cdn.jsdelivr.net/npm/qrcode/+esm' </script>
   <script>
     const $ = (id) => document.getElementById(id);
 
