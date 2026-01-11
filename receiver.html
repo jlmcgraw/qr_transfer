@@ -64,10 +64,9 @@
     </div>
   </div>
 
-  <!-- ZXing browser (UMD) -->
-  <script src="https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/umd/index.min.js"></script>
+  <script type="module">
+    import { BrowserMultiFormatReader } from "https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/+esm";
 
-  <script>
     const $ = (id) => document.getElementById(id);
 
     const video = $("video");
@@ -280,7 +279,7 @@
       setMsg("Starting camera…");
       startBtn.disabled = true;
 
-      reader = new ZXingBrowser.BrowserMultiFormatReader();
+      reader = new BrowserMultiFormatReader();
       try {
         controls = await reader.decodeFromVideoDevice(null, video, (result, err) => {
           if (result?.text) onDecode(result.text);
