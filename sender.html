@@ -380,10 +380,6 @@
         };
         const text = JSON.stringify(payload);
 
-        if (!qrFits(text, ec, maxV)) {
-          throw new Error(`Frame ${i + 1} exceeds max QR version. Reduce max payload by lowering maxVersion or using lower EC, then rebuild.`);
-        }
-
         frames.push(text);
         if ((i & 15) === 0) setProgress((i + 1) / totalChunks);
       }
