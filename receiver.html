@@ -265,6 +265,7 @@
       if (!obj || obj.v !== 1 || typeof obj.t !== "string") return;
 
       if (obj.t === "manifest") {
+        if (manifest && manifest.transfer_id === obj.transfer_id) return;
         resetState();
         applyManifest(obj);
         return;
