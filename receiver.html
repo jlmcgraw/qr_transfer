@@ -65,7 +65,11 @@
   </div>
 
   <script type="module">
-    import { BrowserMultiFormatReader } from "https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/+esm";
+    import {
+      BarcodeFormat,
+      BrowserMultiFormatReader,
+      DecodeHintType
+    } from "https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/+esm";
 
     const $ = (id) => document.getElementById(id);
 
@@ -280,7 +284,10 @@
       setMsg("Starting camera…");
       startBtn.disabled = true;
 
-      reader = new BrowserMultiFormatReader();
+      const hints = new Map();
+      hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE]);
+      hints.set(DecodeHintType.TRY_HARDER, true);
+      reader = new BrowserMultiFormatReader(hints, 50);
       try {
         controls = await reader.decodeFromVideoDevice(null, video, (result, err) => {
           if (result?.text) onDecode(result.text);
